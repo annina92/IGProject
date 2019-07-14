@@ -1,0 +1,1556 @@
+<html>
+	<head>
+		<title>
+			Three.js project
+		</title>
+		<style>
+			body {margin:0;}
+		</style>
+
+	</head>
+	<body>
+		<a href="https://pngtree.com/">Graphics from pngtree.com</a>
+		<button id = "dayNight"> Start/Stop day-night animation</button>
+		<button id = "worldCamera"> change camera</button>
+
+		<script src="js/three.js"></script>
+		<script src="js/stats.min.js"></script>
+
+		<script src="js/OrbitControls.js"></script>
+		<script type="x-shader/x-vertex" id= skyVertexShader>
+			
+
+
+			void main(){
+				vec4 modelViewPosition = modelViewMatrix*vec4(position, 1.0);
+				gl_Position = projectionMatrix*modelViewPosition;
+			}
+			
+
+		</script>
+
+		<script type="x-shader/x-fragment" id="skyFragmentShader">	
+//https://thebookofshaders.com/glossary/?search=mix
+			uniform float skyTime;
+			void main(){
+				float delta = abs(sin(skyTime));
+				vec3 colorA = vec3(0.03, 0.11, 0.43);
+				vec3 colorB = vec3(0.59, 0.85, 0.99);
+
+				vec3 vcolor = mix(colorB, colorA, delta);
+				gl_FragColor = vec4(vcolor,1.0);
+			
+			}
+
+		</script>
+
+		<script type="x-shader/x-vertex" id= terrainVertexShader>
+
+			struct DirectionalLight{
+				vec3 direction;
+				vec3 color;
+			};
+			uniform DirectionalLight directionalLights[NUM_DIR_LIGHTS];
+
+			struct PointLight{
+				vec3 position;
+				vec3 color;
+			};
+			uniform PointLight pointLights[NUM_POINT_LIGHTS];
+
+			varying vec3 Lp, Ld, N,E;
+			
+			
+			varying float height;
+			varying vec2 vUV;
+
+			void main(){
+				vUV = uv* 10.0;
+				vec3 pos = (modelViewMatrix*vec4(position,1.0)).xyz;
+
+
+				Lp= normalize(pointLights[0].position.xyz -pos);
+				Ld= normalize(directionalLights[0].direction);
+
+				E= normalize(-pos);
+				vec4 NN = vec4(normal, 0.0);
+				N = normalize((modelViewMatrix*NN).xyz);
+
+				height = position.z;
+				vec4 modelViewPosition = modelViewMatrix*vec4(position, 1.0);
+				gl_Position = projectionMatrix*modelViewPosition;
+			}
+			
+
+		</script>
+
+		<script type="x-shader/x-fragment" id="terrainFragmentShader">	
+
+
+			varying float height;
+			varying vec2 vUV;
+
+			uniform sampler2D sandyTexture;
+			uniform sampler2D grassTexture;
+			uniform sampler2D rockyTexture;
+			uniform sampler2D snowyTexture;
+			uniform vec3 ambientLightColor;
+
+			uniform vec3 ambient, specular, diffuse;
+			float shininess;
+
+			varying vec3 Lp,Ld,N,E;
+
+			struct PointLight{
+				vec3 position;
+				vec3 color;
+			};
+			uniform PointLight pointLights[NUM_POINT_LIGHTS];
+
+			struct DirectionalLight{
+				vec3 direction;
+				vec3 color;
+			};
+			uniform DirectionalLight directionalLights[NUM_DIR_LIGHTS];
+
+			void main(){
+
+
+				vec3 HDirectional = normalize(E+Ld);
+				vec3 HPoint = normalize(E+Lp);
+
+				vec3 directionalSpecularProduct = directionalLights[0].color*specular;
+				vec3 pointLightSpecularProduct = pointLights[0].color*specular;
+
+				vec3 directionalDiffuseProduct = directionalLights[0].color*diffuse;
+				vec3 pointLightDiffuseProduct =  pointLights[0].color*diffuse;
+
+				vec3 ambientC = ambientLightColor+ ambient*pointLights[0].color+ ambient*directionalLights[0].color;
+
+				float KdDirectional = max(dot(Ld,N),0.0);
+				float KdPoint = max(dot(Lp,N),0.0);
+
+				vec3 diffuseC = KdDirectional*directionalDiffuseProduct+KdPoint*pointLightDiffuseProduct;
+				
+				float KsDirectional = pow(max(dot(N,HDirectional),0.0),shininess);
+				float KsPoint = pow(max(dot(N,HPoint),0.0),shininess);
+
+				vec3 specularC = KsDirectional*directionalDiffuseProduct+KsPoint*pointLightDiffuseProduct;
+				if(height<-16.0){
+					gl_FragColor = vec4(ambientC+diffuseC+specularC,1.0)*texture2D( sandyTexture, vUV);
+				}
+				else if (height>-16.0 && height<-2.1){
+					gl_FragColor = vec4(ambientC+diffuseC,1.0)*texture2D( grassTexture, vUV);
+				}
+				else if (height>-2.1&& height<90.0){
+					gl_FragColor = vec4(ambientC+diffuseC,1.0)*texture2D( rockyTexture, vUV);
+				}
+				else
+					gl_FragColor = vec4(ambientC+diffuseC,1.0)*texture2D( snowyTexture, vUV);
+			}
+
+		</script>
+
+
+
+		<script>
+			/*  SOME REFERENCES  
+			----------------
+			HEIGHT MAP TAKEN FROM: Public Domain, https://commons.wikimedia.org/w/index.php?curid=640001
+
+
+			*/
+
+			//https://stackoverflow.com/questions/22178476/threejs-transform-matrix-ordering
+			//https://codepen.io/elifitch/pen/WbdpgM
+			var degree = Math.PI/180;
+			var theta=0.0;
+
+
+			var colors = {
+				reddish:0xd6791b,
+				blackish:0x141312,
+				blue:0x4879b5,
+				white: 0xffffffff,
+				pink: 0xd89b99
+			}
+
+			var sizes={
+				headWidth: 10,
+				headHeight: 10,
+				bodyWidth: 12,
+				bodyLenght:20,
+				eye:2.5,
+				legLenght:6,
+				legWidth:3,
+				footWidth:3.5,
+				footHeight:2,
+				tailWidth:2,
+				tailLenght:7
+			}
+
+			var cubeSize = 1000;
+
+			var sandyTexture, grassTexture,rockyTexture,snowytexture;
+
+			var startTimer;
+			var fov= 60.0;
+			var aspectRatio = window.innerWidth/window.innerHeight;
+			var near = 0.1;
+			var far = 3000.0;7
+			var dawn = true;
+			var day, dusk, night = false;
+			var legsSet=false
+			var pivot1, pivot2;
+			var steveCounters=0;
+			var lamps=[]
+			var pointLights=[];
+
+			var WPress, SPress, APress, QPress,EPress,DPress
+			var isWalking= false;
+			var isIdle = true;
+			var isJumping = false;
+			var collidableMeshList=[]
+
+			var renderer, camera, scene, controls, stats, cubeCamera, cubeCameraWater, stoneGround, catCamera;
+			var ambientLight, pointLight, pointlight2;
+			var directionalLight;
+			var water
+			var waterArray = []
+			var waterGrid = []
+			var waterGridNew =[]
+			var max
+			var alpha = 1
+
+			var animationAction
+			var terrain;
+			var xAxis, yAzis, zAzis
+			var sky;
+			var clouds=[]
+			var steves=[]
+			var waterSize = 500;
+			var numTilesWater = 100;
+			var terrainSize = 500;
+			var numTilesTerrain = 256;
+			var skyTime=0.0;
+			var statue;
+			var offset1, offset2, offset3, offset4, offset5, offset6;
+			var dayNightOn = true;
+			var isWorldCamera = true;
+			var lampPosition=[new THREE.Vector3(-80,0,160), new THREE.Vector3(-150,0,160),new THREE.Vector3(-150,0,120),new THREE.Vector3(-80,0,120)]
+
+
+			var food= []
+
+			var legMovInitial, legMovFinal, quaternionKF, clipFLSX,mixerFLSX, clipActionFLSX, clipBLSX, mixerBLSX, clipActionBLSX, clipFRSX, clipActionFRSX, mixerFRSX,
+				clipBRSX, mixerBRSX, clipActionBRSX, mixerBLDX, mixerTailWalk, clipTailWalk, clipActionTailWalk,
+				clipSit, mixerSit, clipActionSit
+
+
+
+			var quaternionLegs, quaternionLegs2
+
+
+			var legInitial,legFinal,armInitial,armFinal;
+			var quaternionLegsBack, quaternionLegsForth;
+			var clipSLegSX, mixerSLegSX, clipActionSLegSX;
+
+			var quaternionSteve1, quaternionSteve2;
+
+			//will use them for both element affected by custom shader
+			var materialAmbient = new THREE.Vector3( 0.01,0.01, 0.01);
+			var materialDiffuse = new THREE.Vector3( 0.5, 0.5, 0.5 );
+			var materialSpecular = new THREE.Vector3( 0.0, 0.0, 0.0 );
+			var directionalLightAmbient = new THREE.Vector3(0.1, 0.1,0.1);
+			var directionalLightDiffuse = new THREE.Vector3( 0.5, 0.5, 0.5);
+			var directionalLightSpecular = new THREE.Vector3( 0.1, 0.1, 0.1 );		
+
+			var pointLightAmbient = new THREE.Vector3(0.2, 0.2, 0.2);
+			var pointLightDiffuse = new THREE.Vector3( 0.1, 0.1, 0.1);
+			var pointLightSpecular = new THREE.Vector3( 1.0, 1.0, 1.0 );		
+			var materialShininess = 1.0;
+
+			var timeElapsedFloat=0;
+			var sun;
+
+			var walking, sitting, purring = false;
+
+			var steveMixer;
+			var steve;
+
+			init();
+
+			function init(){
+
+			renderer = new THREE.WebGLRenderer();
+
+			document.body.appendChild(renderer.domElement);
+
+			renderer.setClearColor(0xb7dae5);
+			renderer.setPixelRatio(window.devicePixelRatio);
+			renderer.setSize(window.innerWidth, window.innerHeight);
+			//renderer.shadowMap.enabled = true;
+			//renderer.shadowMap.type = THREE.BasicShadowMap;
+			stats = new Stats();
+			document.body.appendChild(stats.dom)
+
+			//need to pass camera and scene
+			scene = new THREE.Scene();
+
+			/*-------CAMERA--------
+			camera takes fov, aspect ratio, near and far planes
+			CAMERA IS CREATED AT 0,0,0*/
+			camera = new THREE.PerspectiveCamera(fov, aspectRatio, near, far);
+			camera.position.set(100, 40,150)
+			camera.lookAt(-100, 40,150);
+
+
+
+			//create scene
+			//RED = X
+			//GREEN = Y
+			//BLUE = Z
+			scene.add(camera)
+			cubeCamera = new THREE.CubeCamera(1,1000,128);
+			cubeCameraWater = new THREE.CubeCamera(1,1000,128);
+			//scene.add(cubeCamera)
+			scene.add( new THREE.AxisHelper( 20 ) );
+			xAxis = new THREE.Vector3( 1, 0, 0 );
+
+			yAxis = new THREE.Vector3( 0, 1, 0 );
+			zAxis = new THREE.Vector3( 0, 0, 1 );
+
+
+			//add light
+			//AmbientLight(color, intensity)
+			ambientLight = new THREE.AmbientLight(new THREE.Vector3(0.5,0.5,0.5), 0.1);
+			scene.add(ambientLight);
+			//createLamps(lampPosition);
+			console.log(lamps)
+
+			pointLights[0] = new THREE.PointLight(new THREE.Vector3(0.1,0.1,1.0), 2);
+			pointLights[0].position.set(-80,10,160);
+			pointLights[0].castShadow = true;
+			//pointLight.shadow.mapSize.width = 2048;
+			//pointLight.shadow.mapSize.height = 2048;
+			scene.add(pointLights[0]);
+
+			pointLights[1] = new THREE.PointLight(new THREE.Vector3(0.1,0.1,1.0), 2);
+			pointLights[1].position.set(-150,0,160);
+			pointLights[1].castShadow = true;
+			//pointLight.shadow.mapSize.width = 2048;
+			//pointLight.shadow.mapSize.height = 2048;
+			scene.add(pointLights[1]);
+
+			pointLights[2] = new THREE.PointLight(new THREE.Vector3(0.1,0.1,1.0), 2);
+			pointLights[2].position.set(-150,0,120);
+			pointLights[2].castShadow = true;
+			//pointLight.shadow.mapSize.width = 2048;
+			//pointLight.shadow.mapSize.height = 2048;
+			scene.add(pointLights[2]);
+
+			pointLights[3] = new THREE.PointLight(new THREE.Vector3(0.1,0.1,1.0), 2);
+			pointLights[3].position.set(-80,0,120);
+			pointLights[3].castShadow = true;
+			//pointLight.shadow.mapSize.width = 2048;
+			//pointLight.shadow.mapSize.height = 2048;
+			scene.add(pointLights[3]);
+
+			directionalLight = new THREE.DirectionalLight(new THREE.Vector3(0.1,0.1,1), 5);
+			scene.add(directionalLight);
+			directionalLight.position.set(Math.sin(alpha)*270, Math.cos(alpha)*270, 0 );
+
+			var sunGeom = new THREE.SphereGeometry(10,12,12);
+			var sunMat = new THREE.MeshBasicMaterial({color:0xfaf02f})
+			sun = new THREE.Mesh(sunGeom, sunMat);
+			scene.add(sun)
+			sun.position.set(Math.sin(alpha)*270, Math.cos(alpha)*270, 0 );
+
+			sandyTexture = new THREE.TextureLoader().load("textures/sand.png");
+
+			grassTexture = new THREE.TextureLoader().load("textures/grass.png");
+
+			//https://www.filterforge.com/filters/8890.html
+			rockyTexture = new THREE.TextureLoader().load("textures/rock.png");
+
+
+			//https://www.filterforge.com/filters/442.html
+			snowyTexture = new THREE.TextureLoader().load("textures/snow.png");
+
+			this.terrainUniforms = THREE.UniformsUtils.merge([
+					THREE.UniformsLib["lights"]
+
+				])
+
+			this.terrainUniforms.sandyTexture = {type:"t", value: sandyTexture}
+			this.terrainUniforms.grassTexture = {type:"t", value: grassTexture}
+			this.terrainUniforms.rockyTexture = {type:"t", value: rockyTexture}
+			this.terrainUniforms.snowyTexture = {type:"t", value: snowyTexture}
+			this.terrainUniforms.ambient= {type:"v3", value: materialAmbient}
+			this.terrainUniforms.specular= {type:"v3", value: materialSpecular}
+			this.terrainUniforms.diffuse= {type:"v3", value: materialDiffuse}
+			this.terrainUniforms.shininess={type:"f", value:materialShininess}
+	
+			this.terrainUniforms.grassTexture.value.wrapS = this.terrainUniforms.grassTexture.value.wrapT = THREE.RepeatWrapping
+			this.terrainUniforms.sandyTexture.value.wrapS = this.terrainUniforms.sandyTexture.value.wrapT = THREE.RepeatWrapping
+			this.terrainUniforms.rockyTexture.value.wrapS = this.terrainUniforms.rockyTexture.value.wrapT = THREE.RepeatWrapping
+			this.terrainUniforms.snowyTexture.value.wrapS = this.terrainUniforms.rockyTexture.value.wrapT = THREE.RepeatWrapping
+
+
+			this.skyUniforms = THREE.UniformsUtils.merge([
+					THREE.UniformsLib["lights"]
+
+				])			
+
+			this.skyUniforms.skyTime = {type:"f", value: skyTime}
+		
+
+			sky = createSky();
+			scene.add(sky.mesh)
+
+			water = water();
+			//https://www.filterforge.com/filters/720.html
+
+			createVillagers();
+			animateVillager(steves[0])
+			steveWalkAnimation();
+
+
+			terrain = terrain();
+			stoneGround = stones();
+
+			//createFood();
+			//spawnFood();
+			water.mesh.rotation.x = -90*degree
+			water.mesh.position.set(0,10,0)
+			terrain.receiveShadow = true;
+			terrain.castShadow = true;
+
+			terrain.mesh.rotation.x = -90*degree
+			water.mesh.position.set(0,-10,0)
+
+			stoneGround.mesh.rotation.x= -90*degree;
+			stoneGround.mesh.position.set(-140,-2.5, 140);
+			stoneGround.receiveShadow = true;
+
+
+			clock = new THREE.Clock();
+			clock.start();
+			generateClouds(10, sky)
+
+
+			scene.add(terrain.mesh)
+			scene.add(water.mesh)
+			scene.add(stoneGround.mesh);
+
+			createHouses();
+			statue = createStatue();
+			scene.add(statue.mesh)
+			
+
+
+			catCamera = new THREE.PerspectiveCamera(fov, aspectRatio, near, far);
+			scene.add(catCamera);
+			offset1 = 0.2;
+			offset2 = 0.4;
+			offset3 = 0.6;
+			offset4 = 0.8;
+			offset5 = 1;
+
+
+
+			max = cat();
+			max.mesh.scale.set(0.2,0.2,0.2)
+
+
+			//animation
+
+			max.mesh.position.set(100,2,100)
+			scene.add(max.mesh);
+
+
+			animateCat();
+			// controls
+			controls = new THREE.OrbitControls( camera );
+    		controls.minDistance = 10;
+    		controls.maxDistance = 2000;
+    		catCamera.position.set(max.mesh.position.x, max.mesh.position.y+5, max.mesh.position.z)
+    		catCamera.rotation.y= 180*degree
+
+
+			//https://stackoverflow.com/questions/46615844/three-js-normal-mapping-using-shadermaterial-tangentspace-and-fromgeometry
+			
+
+			document.getElementById("dayNight").onclick = function(){dayNightOn = !dayNightOn;};
+			document.getElementById("worldCamera").onclick = function(){isWorldCamera=!isWorldCamera;};
+
+			requestAnimationFrame(render);
+			}
+			
+
+
+			function createStatue(){
+				var statue = new Object();
+				var statueGeometry = new THREE.SphereGeometry(2,16,16)
+				var statueMaterial = new THREE.MeshPhongMaterial({
+					shininess:100,
+					color: 0xffffff,
+					specular: 0x00ffff,
+					envMap: cubeCamera.renderTarget.texture
+				})
+
+				statue.mesh = new THREE.Mesh(statueGeometry, statueMaterial);
+				statue.mesh.position.set(-150,20,140)
+				statue.mesh.castShadow = true;
+				statue.mesh.receiveShadow = true;
+				statue.mesh.add(cubeCamera)
+				return statue;
+			}
+
+			function createLamps(position){
+				for(var i =0;i<4; i++){
+					pointLight = new THREE.PointLight(new THREE.Vector3(0.1,0.1,1.0), 2);
+					pointLight.position.set(position[i]);
+					pointLight.castShadow = true;
+					lamps.push(pointLight)
+					scene.add(lamps[i]);
+					console.log(lamps[i])				
+				}
+			}
+
+			function createHouses(){
+
+				var loader = new THREE.ObjectLoader();
+				loader.load("models/house/medieval-house-2.json", function(obj){
+					scene.add(obj);
+					obj.scale.set(4,4,4)
+					obj.position.set(-80,0,180)
+					obj.castShadow= true;
+					obj.receiveShadow= true;					
+				})
+				loader.load("models/lamp/lamp.json", function(obj){
+					scene.add(obj);
+					obj.scale.set(0.3,0.3,0.3)
+					obj.position.set(-80,-2,160)
+					obj.castShadow= true;
+					obj.receiveShadow= true;					
+				})
+
+				loader.load("models/house/medieval-house-2.json", function(obj){
+					scene.add(obj);
+					obj.scale.set(4,4,4)
+					obj.position.set(-150,0,180)
+					obj.castShadow= true;
+					obj.receiveShadow= true;
+				})
+
+				loader.load("models/lamp/lamp.json", function(obj){
+					scene.add(obj);
+					obj.scale.set(0.3,0.3,0.3)
+					obj.position.set(-150,-2,160)
+					obj.castShadow= true;
+					obj.receiveShadow= true;					
+				})				
+
+				loader.load("models/house/medieval-house-2.json", function(obj){
+					scene.add(obj);
+					obj.scale.set(4,4,4)
+					obj.position.set(-200,-2,140)
+					obj.rotation.y=-90*degree;
+					obj.castShadow= true;
+					obj.receiveShadow= true;
+				})
+
+				loader.load("models/house/medieval-house-2.json", function(obj){
+					scene.add(obj);
+					obj.scale.set(4,4,4)
+					obj.position.set(-150,0,100)
+					obj.rotation.y=180*degree;
+					obj.castShadow= true;
+					obj.receiveShadow= true;
+				})
+				loader.load("models/lamp/lamp.json", function(obj){
+					scene.add(obj);
+					obj.scale.set(0.3,0.3,0.3)
+					obj.position.set(-150,-2,120)
+					obj.castShadow= true;
+					obj.receiveShadow= true;					
+				})	
+				loader.load("models/house/medieval-house-2.json", function(obj){
+					scene.add(obj);
+					obj.scale.set(4,4,4)
+					obj.position.set(-80,0,100)
+					obj.rotation.y=180*degree;
+					obj.castShadow= true;
+					obj.receiveShadow= true;
+				})
+
+				loader.load("models/lamp/lamp.json", function(obj){
+					scene.add(obj);
+					obj.scale.set(0.3,0.3,0.3)
+					obj.position.set(-80,0,120)
+					obj.castShadow= true;
+					obj.receiveShadow= true;					
+				})	
+			}
+
+			function loadSteve(){
+
+				var steve = new Object();
+				steve.mesh = new THREE.Object3D();
+
+				var bodyGeom = new THREE.BoxBufferGeometry(15,20,6);
+				var bodyMat = [
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/bodySide.png")}),
+
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/bodySide.png")}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/green.png")}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/legUp.png")}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/bodyFront.png")}),				
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/bodyBack.png")})
+
+				];
+
+				steve.body = new THREE.Mesh(bodyGeom, new THREE.MeshFaceMaterial(bodyMat));
+				steve.mesh.add(steve.body);
+
+
+				var headGeom = new THREE.BoxBufferGeometry(12,12,12);
+				var headMat = [
+				//sx
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/faceSx.png")}),
+				//dx
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/faceDx.png")}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/faceBack.png")}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/pink.png")}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/face.png")}),				
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/faceBack.png")})
+
+				];
+
+				steve.head = new THREE.Mesh(headGeom, new THREE.MeshFaceMaterial(headMat));
+				steve.body.add(steve.head)
+				steve.head.position.set(0,15,0)
+
+
+				var armGeom = new THREE.BoxBufferGeometry(6,16,6);
+				armGeom.translate(0,-8,0);
+
+
+				var armMat = [
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/arm.png")}),
+
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/arm.png")}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/green.png")}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/pink.png")}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/arm.png")}),				
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/arm.png")})
+
+				];
+
+				steve.armDx = new THREE.Mesh(armGeom, new THREE.MeshFaceMaterial(armMat));
+				steve.armSx = new THREE.Mesh(armGeom, new THREE.MeshFaceMaterial(armMat));				
+				steve.body.add(steve.armDx)	
+				steve.armDx.position.set(10,9,0)	
+				steve.armDx.rotation.z=10*degree;			
+
+				steve.body.add(steve.armSx)
+				steve.armSx.position.set(-10,9,0)
+				steve.armSx.rotation.z=-10*degree;			
+
+				var legGeom = new THREE.BoxBufferGeometry(5.9,16,5.9);
+				legGeom.translate(0,-8,0);
+				var legMat = [
+				//sx
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/leg.png")}),
+				//dx
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/leg.png")}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/legUp.png")}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/legDown.png")}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/leg.png")}),				
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/lady/leg.png")})
+				];
+	
+				steve.legDx = new THREE.Mesh(legGeom, new THREE.MeshFaceMaterial(legMat));
+				steve.legSx = new THREE.Mesh(legGeom, new THREE.MeshFaceMaterial(legMat));				
+				steve.body.add(steve.legDx)			
+				steve.legDx.position.set(4,-9,0)	
+				steve.body.add(steve.legSx)
+				steve.legSx.position.set(-4,-9,0)	
+
+				//var bodyMaterial = new THREE.MeshPhongMaterial({color: colors.white, map:cat.bodyMeshTexture});
+
+				return steve;
+
+			}
+
+			function createVillagers(){
+				for (var i =0; i<1; i++){
+					steves[i]= loadSteve();
+					steves[i].mesh.position.set(50,5,50)
+					steves[i].mesh.scale.set(0.3,0.3,0.3)
+					steves[i].mesh.rotation.y=Math.random()*degree*360;
+					scene.add(steves[i].mesh)
+
+				}
+			}
+
+
+
+			function stones(){
+				//https://www.deviantart.com/agf81/art/Seamless-Texture-5-160257878
+				var stoneGround = new Object();
+				var stonesTexture = THREE.ImageUtils.loadTexture("textures/stone.jpg")
+				stonesTexture.wrapS = THREE.RepeatWrapping;
+				stonesTexture.wrapT = THREE.RepeatWrapping;
+				stonesTexture.repeat.set(10,10);
+				var stonesMaterial = new THREE.MeshPhongMaterial({map:stonesTexture})
+				var stonesGeometry = new THREE.PlaneBufferGeometry(180, 80, 5,5);
+				stoneGround.mesh = new THREE.Mesh(stonesGeometry, stonesMaterial);
+				//stoneGround.mesh.position.set(0,60,0)
+				return stoneGround;
+
+
+			}
+
+
+			function onDocumentKeyUp(event){
+				keyCode = event.which;
+				switch(keyCode) {
+			    	case 87: //W
+			    		WPress = false;
+			    		isWalking = false;
+
+			        	break;
+			    	case 83: //S
+			    		SPress = false;
+			    		isWalking = false;
+
+			        	break;
+			    	case 81: //Q
+			    		QPress = false;
+			      		isWalking = false;
+
+			    	    break;
+				    case 69: //E
+			    		EPress = false;
+			       		isWalking = false;
+
+			    	    break;
+				    case 65: //A
+			    		APress = false;
+
+
+			    	    break;
+				    case 68: //D
+			    		DPress = false;
+
+			    	    break;
+				} 
+
+			}
+
+			function movement(){
+				//var clockTime = clock.getDelta()
+				var moveAngle = 4 * 0.04;
+
+
+				var moveDistance = 70 * 0.04;
+
+				if (WPress == true){
+					max.mesh.translateZ( moveDistance );
+					catCamera.translateZ( -moveDistance );}
+
+				if (SPress == true)	{
+					max.mesh.translateZ(  -moveDistance );
+					catCamera.translateZ(  moveDistance );}
+
+				if (QPress == true){
+					max.mesh.translateX( -moveDistance );
+					catCamera.translateX( -moveDistance );}
+
+				if (EPress == true){
+					max.mesh.translateX(  moveDistance );	
+					catCamera.translateX(  moveDistance );	}
+
+
+				if (APress == true){
+					max.mesh.rotation.y += moveAngle;
+					catCamera.rotation.y += moveAngle;}
+
+
+				if (DPress == true){
+					max.mesh.rotation.y -= moveAngle;
+					catCamera.rotation.y -= moveAngle;}
+
+				camera.updateProjectionMatrix();
+
+
+			}
+
+
+
+
+			function onDocumentKeyDown(event) {
+			    var keyCode = event.which;
+
+
+				switch(keyCode) {
+				    case 87: //W
+				    	WPress = true;
+				    	isWalking = true;
+
+				        break;
+				    case 83: //S
+				    	SPress = true;
+				      	isWalking = true;
+
+				        break;
+				    case 81: //Q
+				    	QPress = true;
+				       	isWalking = true;
+
+				        break;
+				    case 69: //S
+				    	EPress = true;
+				       	isWalking = true;
+
+				        break;
+				    case 65: //A
+				    	APress = true;
+
+				        break;
+				    case 68: //D
+				    	DPress = true;
+				    	break;
+
+				    case 32: //spacebar
+				    	startTimer =clock.getElapsedTime();
+						max.legFrontSx.rotation.x=0;
+						max.legFrontDx.rotation.x=0;
+						max.legDownFrontSx.rotation.x=0;
+						max.legDownFrontDx.rotation.x=0;
+
+						max.legBackSx.rotation.x=0;
+						max.legBackDx.rotation.x=0;
+						max.legDownBackSx.rotation.x=0;
+						max.legDownBackDx.rotation.x=0;
+
+						max.tail.rotation.x=0;
+						max.foreTail.rotation.x=0;
+						max.bodyMesh.rotation.x=0
+
+				    	isJumping = true;
+				        break;
+
+				        case 46: //spacebar
+				    	startTimer =clock.start();
+
+				    	//jumpCatAnimation();
+				        break;
+				} 
+			}
+			function terrain(){
+
+				//http://stemkoski.github.io/Three.js/Shader-Heightmap-Textures.html
+				//https://gpfault.net/posts/perlin-noise.txt.html
+				//https://en.wikipedia.org/wiki/Heightmap
+				var terrain = new Object();
+				var terrainGeometry = new THREE.PlaneBufferGeometry(terrainSize,terrainSize, numTilesTerrain,numTilesTerrain)
+
+				var changingTerrainMaterial = new THREE.ShaderMaterial({
+					uniforms: terrainUniforms,
+					vertexShader:   document.getElementById( 'terrainVertexShader'   ).textContent,
+					fragmentShader: document.getElementById( 'terrainFragmentShader' ).textContent,
+					depthTest:true,	
+					lights: true
+					})
+				
+				var terrainMaterial = new THREE.MeshLambertMaterial({color:0x00ff66});
+				terrain.mesh = new THREE.Mesh(terrainGeometry, changingTerrainMaterial)
+				var img = new Image();
+				img.addEventListener("load", function(){
+					var heightData = getHeightData(img, 1);
+
+					var j=0;
+					for (var i =0; i<terrain.mesh.geometry.attributes.position.count; i++){
+							terrain.mesh.geometry.attributes.position.array[i*3+2] = heightData[j];
+						j++;
+					}
+
+				terrain.mesh.geometry.attributes.position.needsUpdate = true;
+				terrain.mesh.geometry.computeVertexNormals();
+				terrain.mesh.geometry.computeTangents();
+
+
+
+				})
+
+
+				img.src = "textures/heightmapcustom.png"
+				terrain.mesh.castShadow= true;
+				terrain.mesh.receiveShadow=true;
+				return terrain;
+			}
+//http://danni-three.blogspot.com/2013/09/threejs-heightmaps.html
+			function getHeightData(img, scale){
+				var canvas = document.createElement("canvas")
+				canvas.width = img.width
+				canvas.height = img.height
+				var context = canvas.getContext('2d')
+
+				var size = img.width*img.height;
+				var data = new Float32Array(img.width*img.width)
+				context.drawImage(img, 0,0);
+
+				for(var i =0; i<size; i++){
+					data[i] =0
+				}
+
+				var imgd = context.getImageData(0,0,img.width, img.height)
+				var pix = imgd.data;
+
+				var j=0;
+				for(var i=0; i<img.width*img.width; i++){
+					data[i] = pix[j]/scale-135;
+					j+=4
+				}
+				return data;
+			}
+
+			function cloud(){
+//https://george-geng.github.io/abovetheclouds.html
+				var cloud = new Object();
+				var cloudMap = new THREE.TextureLoader().load("textures/cloud.png");
+				var cloudMaterial= new THREE.SpriteMaterial({map:cloudMap, color:0xffffffff})
+				cloud.sprite = new THREE.Sprite(cloudMaterial);
+				//cloud.sprite.scale.set(30,30,30)
+				return cloud;
+			}
+
+			function generateClouds(frequency, skybox){
+				//to generate random number in range
+				//Math.floor(Math.random() * (max - min + 1) + min);
+
+				for(var i =0; i<frequency; i++){
+
+					var randomAngle = Math.floor(Math.random()*360);
+					var randomHeight = Math.floor(Math.random()*(skybox.mesh.radius/2-0+1)+0);
+					var randomSize = Math.floor(Math.random()*(200-50+1)+50);
+					clouds[i] = cloud();
+					clouds[i].sprite.scale.set(randomSize, randomSize,randomSize);
+					clouds[i].sprite.position.set(Math.cos(randomAngle)*skybox.mesh.radius/2 , randomHeight+skybox.mesh.radius/4, Math.sin(randomAngle)*skybox.mesh.radius/2);
+					scene.add(clouds[i].sprite)
+				}
+
+			}
+
+
+			function animateVillager(mesh){
+
+				legInitial = new THREE.Quaternion().setFromAxisAngle( xAxis, -(Math.PI)/7 );
+				legFinal = new THREE.Quaternion().setFromAxisAngle( xAxis, +(Math.PI)/7 );				
+				armInitial = new THREE.Quaternion().setFromAxisAngle( xAxis, -(Math.PI)/7 );
+				armFinal = new THREE.Quaternion().setFromAxisAngle( xAxis, +(Math.PI)/7 );	
+
+				quaternionLegsForth = new THREE.QuaternionKeyframeTrack( '.quaternion', [ 0, 1, 2 ], [ legInitial.x, legInitial.y, legInitial.z, legInitial.w, legFinal.x, legFinal.y, legFinal.z, legFinal.w, legInitial.x, legInitial.y, legInitial.z, legInitial.w ] , THREE.InterpolateSmooth);		
+				quaternionLegsBack = new THREE.QuaternionKeyframeTrack( '.quaternion', [ 0, 1, 2 ], [ legFinal.x, legFinal.y, legFinal.z, legFinal.w, legInitial.x, legInitial.y, legInitial.z, legInitial.w, legFinal.x, legFinal.y, legFinal.z, legFinal.w ] , THREE.InterpolateSmooth);
+
+				//legSX
+				clipSLegSX = new THREE.AnimationClip( 'steveLegsx', 2, [ quaternionLegsForth ] );
+				mixerSLegSX = new THREE.AnimationMixer( mesh.legSx );
+				clipActionSLegSX = mixerSLegSX.clipAction(clipSLegSX)
+				clipActionSLegSX.play();
+				//legDX
+				clipSLegDX = new THREE.AnimationClip( 'steveLegdx', 2, [ quaternionLegsBack ] );
+				mixerSLegDX = new THREE.AnimationMixer( mesh.legDx );
+				clipActionSLegDX = mixerSLegDX.clipAction(clipSLegDX)
+				clipActionSLegDX.play();
+				//armSX
+				clipSArmSX = new THREE.AnimationClip( 'steveArmsx', 2, [ quaternionLegsBack ] );
+				mixerSArmSX = new THREE.AnimationMixer( mesh.armSx );
+				clipActionSArmSX = mixerSArmSX.clipAction(clipSArmSX)
+				clipActionSArmSX.play();
+				//armDX
+				clipSArmDX = new THREE.AnimationClip( 'steveArmsx', 2, [ quaternionLegsForth ] );
+				mixerSArmDX = new THREE.AnimationMixer( mesh.armDx );
+				clipActionSArmDX = mixerSArmDX.clipAction(clipSArmDX)
+				clipActionSArmDX.play();		
+			}
+
+			function steveWalkAnimation(){
+				mixerSLegSX.update( Math.sin(Math.PI * 0.026) );
+				mixerSLegDX.update( Math.sin(Math.PI * 0.026) );
+				mixerSArmSX.update( Math.sin(Math.PI * 0.026) );
+				mixerSArmDX.update( Math.sin(Math.PI * 0.026) );
+
+			}
+
+			function steveRandomWalk(mesh){
+				var moveAngle = 4 * 0.07;
+				var moveDistance = 70 * 0.01;
+				mesh.translateZ( moveDistance );
+				if(clock.getElapsedTime()%4>3 &&clock.getElapsedTime()%4<3.5){
+					mesh.rotation.y += moveAngle;
+				}
+				if(clock.getElapsedTime()%6>5 &&clock.getElapsedTime()%6<5.5){
+					mesh.rotation.y -= moveAngle;
+				}
+
+				if(mesh.position.x>250 || mesh.position.x<-250 ||mesh.position.z>250 || mesh.position.z<-250)
+				{
+					mesh.rotation.y += moveAngle;
+				}
+
+
+
+			}
+			function animateCat(){
+
+						legMovInitial = new THREE.Quaternion().setFromAxisAngle( xAxis, -(Math.PI)/7 );
+						legMovFinal = new THREE.Quaternion().setFromAxisAngle( xAxis, +(Math.PI)/7 );
+						tailMovInitial = new THREE.Quaternion().setFromAxisAngle( zAxis, -(Math.PI)/7 );
+						tailMovFinal = new THREE.Quaternion().setFromAxisAngle( zAxis, +(Math.PI)/7 );
+
+						quaternionLegs = new THREE.QuaternionKeyframeTrack( '.quaternion', [ 0, 1, 2 ], [ legMovInitial.x, legMovInitial.y, legMovInitial.z, legMovInitial.w, legMovFinal.x, legMovFinal.y, legMovFinal.z, legMovFinal.w, legMovInitial.x, legMovInitial.y, legMovInitial.z, legMovInitial.w ] , THREE.InterpolateSmooth);		
+						quaternionLegs2 = new THREE.QuaternionKeyframeTrack( '.quaternion', [ 0, 1, 2 ], [ legMovFinal.x, legMovFinal.y, legMovFinal.z, legMovFinal.w, legMovInitial.x, legMovInitial.y, legMovInitial.z, legMovInitial.w, legMovFinal.x, legMovFinal.y, legMovFinal.z, legMovFinal.w ] , THREE.InterpolateSmooth);
+						quaternionTail = new THREE.QuaternionKeyframeTrack( '.quaternion', [ 0, 1, 2 ], [ tailMovInitial.x, tailMovInitial.y, tailMovInitial.z, tailMovInitial.w, tailMovFinal.x, tailMovFinal.y, tailMovFinal.z, tailMovFinal.w, tailMovInitial.x, tailMovInitial.y, tailMovInitial.z, tailMovInitial.w ] , THREE.InterpolateSmooth);	
+						//tail
+
+						clipTailWalk = new THREE.AnimationClip( 'tailWalk', 2, [ quaternionTail ] );		
+						tailObj = new THREE.AnimationObjectGroup(max.tail, max.foreTail);
+						mixerTailWalk = new THREE.AnimationMixer( tailObj );
+
+						clipActionTailWalk = mixerTailWalk.clipAction( 
+							clipTailWalk );
+						clipActionTailWalk.play();											
+
+						//legBackSX
+
+						clipBLSX = new THREE.AnimationClip( 'legBSX', 2, [ quaternionLegs ] );		
+
+						mixerBLSX = new THREE.AnimationMixer( max.legBackSx );
+
+						clipActionBLSX = mixerBLSX.clipAction( 
+							clipBLSX );
+						clipActionBLSX.play();		
+
+						//legfrontSx
+						clipFLSX = new THREE.AnimationClip( 'legFSX', 2, [ quaternionLegs2 ] );		
+
+						mixerFLSX = new THREE.AnimationMixer( max.legFrontSx );
+
+						clipActionFLSX = mixerFLSX.clipAction( 
+							clipFLSX );
+						clipActionFLSX.play();		
+
+						//legfrontDx
+						clipFLDX = new THREE.AnimationClip( 'legFDX', 2, [ quaternionLegs ] );		
+
+						mixerFLDX = new THREE.AnimationMixer( max.legFrontDx );
+
+						clipActionFLDX = mixerFLDX.clipAction( 
+							clipFLDX );
+						clipActionFLDX.play();					
+
+						//legBackDx
+						clipBLDX = new THREE.AnimationClip( 'legBDX', 2, [ quaternionLegs2 ] );		
+
+						mixerBLDX = new THREE.AnimationMixer( max.legBackDx );
+
+						clipActionBLDX = mixerBLDX.clipAction( 
+							clipBLDX );
+						clipActionBLDX.play();	
+
+
+
+			}
+
+			function walkCatAnimation(){
+			
+
+				mixerBLSX.update( Math.sin(Math.PI * 0.026) );
+				mixerFLSX.update(Math.sin(Math.PI * 0.026));
+				mixerBLDX.update( Math.sin(Math.PI * 0.026) );
+				mixerFLDX.update(Math.sin(Math.PI * 0.026));
+
+				mixerTailWalk.update(Math.sin(Math.PI * 0.026));
+
+	
+
+			}
+
+			function sitCatAnimation(){
+
+
+			}
+
+
+
+
+			function cat(){
+				var cat = new Object();
+				cat.mesh = new THREE.Object3D();
+
+				//body
+				var bodyGeometry = new THREE.BoxBufferGeometry(sizes.bodyWidth, sizes.bodyWidth, sizes.bodyLenght)
+				var textureLoader = new THREE.TextureLoader();
+				cat.bodyMeshTexture = new textureLoader.load("textures/bodyBW.png");
+
+				var bodyMaterial = [
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/bodyBW.png")}),
+
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/bodyBW.png")}),
+					new THREE.MeshPhongMaterial({color:colors.blackish}),
+					new THREE.MeshPhongMaterial({color:colors.white}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/bodyBW.png")}),				
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/bodyBW.png")})
+
+				];
+
+				//var bodyMaterial = new THREE.MeshPhongMaterial({color: colors.white, map:cat.bodyMeshTexture});
+				cat.bodyMesh = new THREE.Mesh(bodyGeometry, new THREE.MeshFaceMaterial(bodyMaterial));
+
+				//cat.bodyMesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
+				cat.mesh.add(cat.bodyMesh)
+
+
+				//cat.bodyMesh.position.set(0,0,10)
+
+				//head
+				var headGeometry = new THREE.BoxBufferGeometry(sizes.headWidth, sizes.headHeight,sizes.headWidth);
+				var headMaterial = new THREE.MeshLambertMaterial({color:colors.blackish});
+				//headMaterial.envMap = cubeCamera.renderTarget.texture;
+				cat.headMesh = new THREE.Mesh(headGeometry, headMaterial);
+				cat.bodyMesh.add(cat.headMesh);	
+				cat.headMesh.position.set(0,5,sizes.bodyLenght/2+sizes.headWidth/2-2)
+
+				//eyes
+				var eyeGeometry = new THREE.BoxBufferGeometry(sizes.eye, sizes.eye, sizes.eye);
+				var eyeMaterial = new THREE.MeshLambertMaterial({color:colors.white})
+				cat.eyeMeshLeft = new THREE.Mesh(eyeGeometry, eyeMaterial);
+				cat.eyeMeshRight = new THREE.Mesh(eyeGeometry, eyeMaterial);
+				cat.headMesh.add(cat.eyeMeshLeft);
+				cat.headMesh.add(cat.eyeMeshRight);
+				cat.eyeMeshLeft.position.set(-2,1.6, sizes.headWidth/2-0.8)
+				cat.eyeMeshRight.position.set(+2,1.6, sizes.headWidth/2-0.8)
+
+				//eyes color
+				var eyeColorGeometry = new THREE.BoxBufferGeometry(1.5,1.5,1.5)
+				var eyeColorMaterial = new THREE.MeshPhongMaterial({color:colors.blue});
+				cat.eyeColorMeshLeft = new THREE.Mesh(eyeColorGeometry, eyeColorMaterial);
+				cat.eyeColorMeshRight = new THREE.Mesh(eyeColorGeometry, eyeColorMaterial);		
+				cat.eyeMeshLeft.add(cat.eyeColorMeshLeft);
+				cat.eyeMeshRight.add(cat.eyeColorMeshRight);
+				cat.eyeColorMeshLeft.position.set(0,-0.5,1)	
+				cat.eyeColorMeshRight.position.set(0,-0.5,1)
+
+				//hears
+				var hearGeometry = new THREE.TetrahedronBufferGeometry(3);
+				var hearMaterial = new THREE.MeshPhongMaterial({color: colors.blackish});
+				cat.hearLeft = new THREE.Mesh(hearGeometry, hearMaterial);
+				cat.hearRight = new THREE.Mesh(hearGeometry, hearMaterial);		
+				cat.headMesh.add(cat.hearLeft);
+				cat.headMesh.add(cat.hearRight);
+				cat.hearRight.position.set(2.1,sizes.headWidth/2+0.8, 0);
+				cat.hearRight.rotation.y=2.3
+				cat.hearRight.rotation.x=60*degree
+
+				cat.hearLeft.position.set(-2.1,sizes.headWidth/2+0.8, 0);
+				cat.hearLeft.rotation.y=2.3
+				cat.hearLeft.rotation.x=60*degree
+
+				//snout
+				var snoutGeometry = new THREE.BoxBufferGeometry(6,3.5,4);
+
+				var snoutMaterial= [
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/faceSide.png")}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/faceSide.png")}),
+					new THREE.MeshPhongMaterial({color:colors.blackish}),
+					new THREE.MeshPhongMaterial({color:colors.white}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/face.png")}),				
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/faceSide.png")})
+
+				];
+
+
+				cat.snoutMesh = new THREE.Mesh(snoutGeometry, new THREE.MeshFaceMaterial(snoutMaterial));
+				cat.headMesh.add(cat.snoutMesh);
+				cat.snoutMesh.position.set(0,-3,sizes.headWidth/2-0.5);
+
+				//legs (up)
+				var legGeometry = new THREE.BoxBufferGeometry(sizes.legWidth, sizes.legLenght, sizes.legWidth);
+				var legUpMaterial = new THREE.MeshPhongMaterial({color:colors.white});
+				legGeometry.translate(0,-sizes.legLenght,0);
+				cat.legFrontSx = new THREE.Mesh(legGeometry,legUpMaterial);
+				cat.legFrontDx = new THREE.Mesh(legGeometry,legUpMaterial);
+				cat.legBackSx = new THREE.Mesh(legGeometry,legUpMaterial);
+				cat.legBackDx = new THREE.Mesh(legGeometry,legUpMaterial);
+				cat.bodyMesh.add(cat.legFrontSx);
+				cat.legFrontSx.position.set(-sizes.bodyWidth/3,-2.7,sizes.bodyLenght/2-4)
+				cat.bodyMesh.add(cat.legFrontDx);
+				cat.legFrontDx.position.set(sizes.bodyWidth/3,-2.7,sizes.bodyLenght/2-4)
+				cat.bodyMesh.add(cat.legBackSx);
+				cat.legBackSx.position.set(-sizes.bodyWidth/3,-2.7,-sizes.bodyLenght/2+4)
+				cat.bodyMesh.add(cat.legBackDx);
+				cat.legBackDx.position.set(sizes.bodyWidth/3,-2.7,-sizes.bodyLenght/2+4)
+
+				//legs (down)
+				var legDownGeometry = new THREE.BoxBufferGeometry(sizes.legWidth, sizes.legLenght, sizes.legWidth);
+				legDownGeometry.translate(0,-sizes.legLenght/2,0);
+				var legDownMaterial = [
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/bodyBWReverse.png")}),
+
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/bodyBWReverse.png")}),
+					new THREE.MeshPhongMaterial({color:colors.white}),
+					new THREE.MeshPhongMaterial({color:colors.blackish}),
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/bodyBWReverse.png")}),				
+					new THREE.MeshPhongMaterial({map:THREE.ImageUtils.loadTexture("textures/bodyBWReverse.png")})
+
+				];
+				cat.legDownFrontSx = new THREE.Mesh(legDownGeometry,new THREE.MeshFaceMaterial(legDownMaterial));
+				cat.legDownFrontDx = new THREE.Mesh(legDownGeometry,new THREE.MeshFaceMaterial(legDownMaterial));
+				cat.legDownBackSx = new THREE.Mesh(legDownGeometry,new THREE.MeshFaceMaterial(legDownMaterial));
+				cat.legDownBackDx = new THREE.Mesh(legDownGeometry,new THREE.MeshFaceMaterial(legDownMaterial));
+
+				cat.legFrontSx.add(cat.legDownFrontSx);
+				cat.legDownFrontSx.position.set(0,-sizes.legLenght*1.3,0)
+				cat.legFrontDx.add(cat.legDownFrontDx);
+				cat.legDownFrontDx.position.set(0,-sizes.legLenght*1.3,0)
+				cat.legBackSx.add(cat.legDownBackSx);
+				cat.legDownBackSx.position.set(0,-sizes.legLenght*1.3,0)
+				cat.legBackDx.add(cat.legDownBackDx);
+				cat.legDownBackDx.position.set(0,-sizes.legLenght*1.3,0)
+
+				//feet
+				var footGeometry= new THREE.BoxBufferGeometry(3, sizes.footHeight, sizes.footWidth+1);
+				var footMaterial = new THREE.MeshPhongMaterial({color:colors.white});
+				cat.footFrontSx = new THREE.Mesh(footGeometry,footMaterial);
+				cat.legDownFrontSx.add(cat.footFrontSx)
+				cat.footFrontSx.position.set(0,-sizes.legLenght-1, 0.8)
+				cat.footFrontDx = new THREE.Mesh(footGeometry,footMaterial);
+				cat.legDownFrontDx.add(cat.footFrontDx)
+				cat.footFrontDx.position.set(0,-sizes.legLenght-1, 0.8)
+				cat.footBackSx = new THREE.Mesh(footGeometry,footMaterial);
+				cat.legDownBackSx.add(cat.footBackSx)
+				cat.footBackSx.position.set(0,-sizes.legLenght-1, 0.5)
+				cat.footBackDx = new THREE.Mesh(footGeometry,footMaterial);
+				cat.legDownBackDx.add(cat.footBackDx)
+				cat.footBackDx.position.set(0,-sizes.legLenght-1, 0.5)
+
+				//tail
+				var tail1Geometry = new THREE.BoxBufferGeometry(sizes.tailWidth, sizes.tailLenght, sizes.tailWidth);
+				var tailMaterial = new THREE.MeshPhongMaterial({color:colors.blackish})
+				tail1Geometry.translate(0,-sizes.tailLenght/2,0)
+				cat.foreTail = new THREE.Mesh(tail1Geometry, tailMaterial);
+				cat.bodyMesh.add(cat.foreTail);
+				cat.foreTail.position.set(0,sizes.bodyWidth/2-3, -11)
+
+
+
+				//tail2
+				var tail2Geometry = new THREE.BoxBufferGeometry(sizes.tailWidth, sizes.tailLenght, sizes.tailWidth);
+				var tailMaterial = new THREE.MeshPhongMaterial({color:colors.blackish})
+				tail2Geometry.translate(0,-sizes.tailLenght/2,0)
+				cat.tail = new THREE.Mesh(tail2Geometry, tailMaterial);
+				cat.foreTail.add(cat.tail);
+				cat.tail.position.set(0,-sizes.bodyWidth/2, 0)
+
+
+				return cat;
+			}
+
+
+
+			function createSky(){
+				var sky = new Object();
+				var skyGeometry = new THREE.BoxBufferGeometry(cubeSize,cubeSize,cubeSize);
+				var skyMaterial = new THREE.ShaderMaterial({
+					uniforms:skyUniforms,
+					vertexShader:   document.getElementById( 'skyVertexShader'   ).textContent,
+					fragmentShader: document.getElementById( 'skyFragmentShader' ).textContent,
+					depthTest:true,	
+					side:THREE.BackSide,
+					lights: true
+					})
+				sky.mesh = new THREE.Mesh(skyGeometry, skyMaterial);
+				sky.mesh.radius = cubeSize/2;
+
+
+				return sky;
+			}
+
+
+			function water(){
+
+//https://stackoverflow.com/questions/30661266/water-rendering-in-opengl/30665047
+
+//https://stackoverflow.com/questions/14864578/tiled-water-normals
+
+//https://threejs.org/examples/#webgl_custom_attributes
+				var water = new Object();
+				waterGeometry = new THREE.PlaneBufferGeometry(waterSize, waterSize,numTilesWater, numTilesWater);
+
+				//since i rotated the plane, I'll work on the z coordinate.
+				for (var i =0; i< waterGeometry.attributes.position.count; i++){
+					var vec = new THREE.Vector3();
+					vec.fromBufferAttribute(waterGeometry.attributes.position, i);
+
+					
+					var x = vec.x;
+					var y = vec.y
+					waterGeometry.attributes.position.array[i*3+2] = Math.sin(x)+Math.cos(y);
+
+					vec.fromBufferAttribute(waterGeometry.attributes.position, i);
+
+					waterArray[i] = vec;
+				}
+
+				waterGrid = createWaterGrid(numTilesWater,numTilesWater);
+				waterGridNew = createWaterGrid(numTilesWater,numTilesWater);
+
+				//fill up grid of position vectors
+				var a=0;
+
+				for(var i =0; i<numTilesWater; i++){
+					for (var j =0; j<numTilesWater; j++){
+						waterGrid[i][j] = waterArray[i*j];
+						a++
+					}
+				}
+
+
+				var waterMaterial = new THREE.MeshPhongMaterial({color: colors.blue,transparent:true, opacity:0.5,
+					envMap: cubeCamera.renderTarget.texture,
+					normalMap: THREE.ImageUtils.loadTexture("textures/waterNorm.jpeg")
+				})
+
+				water.mesh = new THREE.Mesh(waterGeometry, waterMaterial)
+				water.mesh.geometry.computeVertexNormals();
+				//water.mesh.add(cubeCameraWater)
+				return water;
+
+			}
+
+			function createWaterGrid(width, height){
+				var water = []
+				for(var i =0; i<width; i++){
+					water[i] = []
+					for(var j = 0; j<height; j++){
+						water[i][j] =new THREE.Vector3(0,0,0);
+					}
+				}
+
+				return water
+
+			}
+			
+			function waterAnimation(){
+				var a=0
+				for(var i =1; i<numTilesWater-1; i++){
+					for(var j=1; j<numTilesWater-1; j++){
+						var upWVector = waterGrid[i-1][j]
+						var downWVector = waterGrid[i+1][j]
+						var leftWVector = waterGrid[i][j-1]
+						var rightWVector = waterGrid[i][j+1]
+						var newHeight = waterGrid[i][j].z+((upWVector.z+downWVector.z+leftWVector.z+rightWVector.z)/4-waterGrid[i][j].z )
+
+						newHeight*=0.02;
+						newHeight+=waterGrid[i][j].z;
+
+						waterGridNew[i][j] = new THREE.Vector3(waterGrid[i][j].x, waterGrid[i][j].y,  Math.round(newHeight%3 * 100) / 100 )
+						if(i==1&&j==1){
+						}
+						//water.mesh.geometry.attributes.position.array[a]= waterGridNew[i][j].x
+						//water.mesh.geometry.attributes.position.array[a+1]= waterGridNew[i][j].z
+						water.mesh.geometry.attributes.position.array[a+2]= waterGridNew[i][j].z
+				
+						a+=3;					
+					}
+				}
+				water.mesh.geometry.attributes.position.needsUpdate = true;
+
+				waterGrid = waterGridNew
+			}
+
+			function idleCatAnimation(){
+				max.legFrontSx.rotation.x=0.03*Math.sin(Date.now()*0.003);
+				max.legFrontDx.rotation.x=0.03*Math.sin(Date.now()*0.003);
+
+				max.legBackSx.rotation.x=0.03*Math.sin(Date.now()*0.003);
+				max.legBackDx.rotation.x=0.03*Math.sin(Date.now()*0.003);
+
+				max.legDownFrontSx.rotation.x=-0.03*Math.sin(Date.now()*0.003);
+				max.legDownFrontDx.rotation.x=-0.03*Math.sin(Date.now()*0.003);
+
+				max.legDownBackSx.rotation.x=-0.03*Math.sin(Date.now()*0.003);
+				max.legDownBackDx.rotation.x=-0.03*Math.sin(Date.now()*0.003);
+
+				max.bodyMesh.position.y=-0.3*Math.sin(Date.now()*0.003)
+				max.headMesh.rotation.x=0.03*Math.sin(Date.now()*0.003)
+
+				max.tail.rotation.z=0.3*Math.sin(Date.now()*0.003);
+				max.foreTail.rotation.z=0.3*Math.sin(Date.now()*0.003);
+
+
+			}
+
+			function jumpCatAnimation(){
+				isWalking = false;
+
+				if(clock.getElapsedTime()< startTimer+offset1){
+					if(legsSet){
+						max.legFrontSx.rotation.x=0;
+						max.legDownFrontSx.rotation.x=0
+						max.legFrontDx.rotation.x=0
+						max.legDownFrontDx.rotation.x=0
+						//back legs bending
+						max.legBackSx.rotation.x=0
+						max.legDownBackSx.rotation.x=0
+						max.legBackDx.rotation.x=0;
+						max.legDownBackDx.rotation.x=0
+						legsSet = true;
+					}
+					max.legFrontSx.rotation.x-=0.25;
+					max.legDownFrontSx.rotation.x+=0.50
+					max.legFrontDx.rotation.x-=0.25;
+					max.legDownFrontDx.rotation.x+=0.5
+					//back legs bending
+					max.legBackSx.rotation.x-=0.25;
+					max.legDownBackSx.rotation.x+=0.5
+					max.legBackDx.rotation.x-=0.25;
+					max.legDownBackDx.rotation.x+=0.5
+					catCamera.position.y-=1.5
+					max.bodyMesh.position.y-=1.5					
+				}
+
+				if(clock.getElapsedTime()>startTimer+offset1 && clock.getElapsedTime()<startTimer+offset2){
+					max.legFrontSx.rotation.x+=0.25;
+					max.legDownFrontSx.rotation.x-=0.50
+					max.legFrontDx.rotation.x+=0.25;
+					max.legDownFrontDx.rotation.x-=0.5
+					//back legs bending
+					max.legBackSx.rotation.x+=0.25;
+					max.legDownBackSx.rotation.x-=0.5
+					max.legBackDx.rotation.x+=0.25;
+					max.legDownBackDx.rotation.x-=0.5
+
+					max.bodyMesh.position.y+=4					
+					catCamera.position.y+=4					
+
+				}
+
+				if(clock.getElapsedTime()>startTimer+offset2 && clock.getElapsedTime()<startTimer+offset3){
+					max.bodyMesh.position.y-=2	
+					catCamera.position.y-=2					
+	
+
+				}
+				if(clock.getElapsedTime()>startTimer+offset3 && clock.getElapsedTime()<startTimer+offset4){
+					max.legFrontSx.rotation.x-=0.25;
+					max.legDownFrontSx.rotation.x+=0.50
+					max.legFrontDx.rotation.x-=0.25;
+					max.legDownFrontDx.rotation.x+=0.5
+					//back legs bending
+					max.legBackSx.rotation.x-=0.25;
+					max.legDownBackSx.rotation.x+=0.5
+					max.legBackDx.rotation.x-=0.25;
+					max.legDownBackDx.rotation.x+=0.5
+
+					catCamera.position.y-=2					
+					max.bodyMesh.position.y-=2		
+
+				}
+				if(clock.getElapsedTime()>startTimer+offset4 && clock.getElapsedTime()<startTimer+offset5){
+					max.legFrontSx.rotation.x+=0.25;
+					max.legDownFrontSx.rotation.x-=0.50
+					max.legFrontDx.rotation.x+=0.25;
+					max.legDownFrontDx.rotation.x-=0.5
+					//back legs bending
+					max.legBackSx.rotation.x+=0.25;
+					max.legDownBackSx.rotation.x-=0.5
+					max.legBackDx.rotation.x+=0.25;
+					max.legDownBackDx.rotation.x-=0.5
+
+					catCamera.position.y+=1.5					
+					max.bodyMesh.position.y+=1.5					
+
+				}
+
+				if(clock.getElapsedTime()>startTimer+offset5){
+					isJumping=false;
+					legsSet=false;
+					if(WPress==true)
+						isWalking=true
+
+					max.legFrontSx.rotation.x=0;
+					max.legDownFrontSx.rotation.x=0
+					max.legFrontDx.rotation.x=0
+					max.legDownFrontDx.rotation.x=0
+					//back legs bending
+					max.legBackSx.rotation.x=0
+					max.legDownBackSx.rotation.x=0
+					max.legBackDx.rotation.x=0;
+					max.legDownBackDx.rotation.x=0
+				}
+
+			}
+
+			function createFood(){
+				foodGeom = new THREE.BoxBufferGeometry(2,1,1);
+				foodMat = new THREE.MeshBasicMaterial({color:0xf20505})
+				for(var i =0; i<30;i++){
+					food[i] = new THREE.Mesh(foodGeom,foodMat);
+				}
+
+				collidableMeshList.push(food[i]);
+
+
+			}
+			function render(){
+
+				if(isWalking)
+					walkCatAnimation();
+				if(isJumping)
+					jumpCatAnimation();
+				if(!isWalking &&!isJumping)
+					idleCatAnimation();
+
+				steveWalkAnimation();
+				steveRandomWalk(steves[0].mesh);
+				waterAnimation(waterGrid, waterGridNew);
+
+				//spawnFood()
+				
+				statue.mesh.position.y+=Math.sin(Date.now()*0.003);
+				cubeCamera.updateCubeMap(renderer, scene)
+				cubeCameraWater.updateCubeMap(renderer, scene)
+				if(isWorldCamera==false){
+					renderer.render(scene, catCamera);
+
+				}
+				else if(isWorldCamera){
+				renderer.render(scene, camera);}
+
+
+				requestAnimationFrame(render);
+				stats.update();
+	 		 	document.addEventListener("keydown", onDocumentKeyDown, false);
+	  			document.addEventListener("keyup", onDocumentKeyUp);
+	  			movement();
+				if(dayNightOn){
+					directionalLight.position.set(Math.cos(alpha)*450, Math.sin(alpha)*450, 0)
+					sun.position.set(Math.cos(alpha)*450, Math.sin(alpha)*450, 0)
+					alpha+=0.01
+					skyTime +=0.005;
+					sky.mesh.material.uniforms.skyTime.value = skyTime;
+				}
+				timeElapsedFloat+=0.1;
+
+
+			}
+
+		</script>
+
+	</body>
+</html>
